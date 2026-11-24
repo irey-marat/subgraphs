@@ -23,6 +23,13 @@ const PATH_EXPIRY_LONG_MAX = 3500;
 const SUPPRESSIVE_FIRE_COOLDOWN_MS = 2000;
 const SUPPRESSIVE_FIRE_SPREAD = 0.35;
 
+const AWARENESS_MAX = 100;
+const AWARENESS_ALERT_THRESHOLD = 25;
+const AWARENESS_COMBAT_THRESHOLD = 55;
+const AWARENESS_PATROL_DECAY = 6.5;
+const AWARENESS_ALERT_DECAY = 4.0;
+const AWARENESS_COMBAT_DECAY = 1.5;
+
 export class BotBrain {
   constructor(entity, world, profile) {
     this.entity = entity;
@@ -39,6 +46,8 @@ export class BotBrain {
     this.intentExpiry = 0;
     this.intentStartTime = 0;
     this.intentTarget = null;
+
+    this.awareness = 0;
 
     this.patrolRoute = [];
     this.patrolIndex = 0;
@@ -91,8 +100,6 @@ export class BotBrain {
     this.generatePatrolRoute();
   }
 
-  // -------- Сериализация --------
-
   serializeState() {
     return {
       state: this.state,
@@ -100,6 +107,7 @@ export class BotBrain {
       intentStartTime: this.intentStartTime,
       intentExpiry: this.intentExpiry,
       interest: this.interest,
+      awareness: this.awareness,
       lastSeenPlayerPos: this.lastSeenPlayerPos ? {
         gx: this.lastSeenPlayerPos.gx,
         gy: this.lastSeenPlayerPos.gy,
@@ -123,6 +131,7 @@ export class BotBrain {
     if (data.intentStartTime !== undefined) this.intentStartTime = data.intentStartTime;
     if (data.intentExpiry !== undefined) this.intentExpiry = data.intentExpiry;
     if (data.interest !== undefined) this.interest = data.interest;
+    if (data.awareness !== undefined) this.awareness = data.awareness;
     if (data.lastSeenPlayerPos) this.lastSeenPlayerPos = data.lastSeenPlayerPos;
     if (data.alertPosition) this.alertPosition = data.alertPosition;
     if (data.coverPosition) this.coverPosition = data.coverPosition;
@@ -135,8 +144,6 @@ export class BotBrain {
     if (data.lastGrenadeTime !== undefined) this.lastGrenadeTime = data.lastGrenadeTime;
     if (data.lastMedkitTime !== undefined) this.lastMedkitTime = data.lastMedkitTime;
   }
-
-  // -------- Интервалы --------
 
   getThinkInterval() {
     if (this.state === AI_STATE.COMBAT) {
@@ -156,16 +163,12 @@ export class BotBrain {
     this.lastThinkTime = 0;
   }
 
-  // -------- Path expiry (3c-2) --------
-
   computePathExpiry(pathLength) {
     if (!pathLength || pathLength < SHORT_PATH_CELLS) {
       return performance.now() + PATH_EXPIRY_SHORT_MIN + Math.random() * (PATH_EXPIRY_SHORT_MAX - PATH_EXPIRY_SHORT_MIN);
     }
     return performance.now() + PATH_EXPIRY_LONG_MIN + Math.random() * (PATH_EXPIRY_LONG_MAX - PATH_EXPIRY_LONG_MIN);
   }
-
-  // -------- Lead (3c-2) --------
 
   getLeadTarget(player) {
     if (!player || !player.isAlive) return null;
@@ -214,6 +217,71 @@ export class BotBrain {
     return { gx: predGx, gy: predGy };
   }
 
+  // -------- Awareness (4a-4) --------
+
+  updateAwareness(now) {
+    const player = this.world.player;
+    let gain = 0;
+
+    const playerVisible = this.canSeePlayer();
+
+    if (playerVisible && player && player.isAlive) {
+      const detection = this.getDetectionChance();
+      const baseGain = 4 + detection * 18;
+
+      let fovMult = 1.0;
+      if (detection < 0.3) fovMult = 0.5;
+      else if (detection < 0.6) fovMult = 0.8;
+
+      let moveMult = 1.0;
+      const isMoving = player.moveCooldown > 0 || player.isMoving;
+      if (isMoving) moveMult = 1.35;
+
+      let shotBonus = 0;
+      if (player.lastShotTime && (now - player.lastShotTime) < 400) {
+        shotBonus = 12;
+      }
+
+      gain = baseGain * fovMult * moveMult + shotBonus;
+
+      this.lastSeenPlayerPos = { gx: player.gx, gy: player.gy, time: now };
+    }
+
+    const sound = this.hearSound();
+    if (sound.heard) {
+      let soundGain = 6;
+      if (sound.type === 'gunshot') soundGain = 12;
+      else if (sound.type === 'explosion') soundGain = 18;
+      else if (sound.type === 'footstep') soundGain = 5;
+      gain += soundGain * (sound.intensity || 0.5);
+
+      if (!this.lastSeenPlayerPos && sound.gx !== undefined) {
+        this.lastSeenPlayerPos = { gx: sound.gx, gy: sound.gy, time: now };
+      }
+    }
+
+    if (gain > 0) {
+      this.awareness = Math.min(AWARENESS_MAX, this.awareness + gain);
+    }
+
+    let decay = AWARENESS_PATROL_DECAY;
+    if (this.state === AI_STATE.COMBAT) decay = AWARENESS_COMBAT_DECAY;
+    else if (this.state === AI_STATE.ALERT) decay = AWARENESS_ALERT_DECAY;
+
+    const dt = Math.min(0.5, (now - this.lastInterestDecay) / 1000);
+    this.awareness = Math.max(0, this.awareness - decay * dt);
+  }
+
+  getAwarenessState() {
+    if (this.awareness >= AWARENESS_COMBAT_THRESHOLD && (this.hasLineOfSightTo(this.lastSeenPlayerPos?.gx ?? -1, this.lastSeenPlayerPos?.gy ?? -1) || (this.lastSeenPlayerPos && performance.now() - this.lastSeenPlayerPos.time < 3000))) {
+      return 'combat';
+    }
+    if (this.awareness >= AWARENESS_ALERT_THRESHOLD) {
+      return 'alert';
+    }
+    return 'patrol';
+  }
+
   // -------- Оценка ситуации --------
 
   assessSituation(now) {
@@ -240,12 +308,16 @@ export class BotBrain {
       preferred,
       weaponRange,
       hasCover: !!cover,
-      cover
+      cover,
+      awareness: this.awareness,
+      awarenessState: this.getAwarenessState()
     };
   }
 
   chooseIntent(situation, now) {
-    if (situation.playerAlive && situation.playerVisible) {
+    const awarenessState = situation.awarenessState;
+
+    if (situation.playerAlive && situation.playerVisible && awarenessState === 'combat') {
       if (situation.hpPercent < 0.3 || situation.suppression > 0.7) {
         return INTENT.FALL_BACK;
       }
@@ -257,12 +329,15 @@ export class BotBrain {
       }
       return INTENT.HOLD;
     }
-    if (situation.lastSeenFresh) {
+
+    if (awarenessState === 'alert' || situation.lastSeenFresh) {
       return INTENT.SEARCH;
     }
+
     if (this.state === AI_STATE.COMBAT && situation.playerAlive) {
       return INTENT.PUSH;
     }
+
     return INTENT.PATROL;
   }
 
@@ -361,7 +436,14 @@ export class BotBrain {
     if (sound && sound.heardLoudness > 0.05) {
       let interestGain = INTEREST_FACTORS.SOUND_GUNSHOT * sound.heardLoudness;
       if (sound.type === 'explosion') interestGain = INTEREST_FACTORS.SOUND_EXPLOSION * sound.heardLoudness;
-      return { heard: true, gx: sound.gx, gy: sound.gy, type: sound.type, intensity: sound.heardLoudness, interestGain };
+      return {
+        heard: true,
+        gx: sound.gx,
+        gy: sound.gy,
+        type: sound.type,
+        intensity: sound.heardLoudness,
+        interestGain
+      };
     }
     return { heard: false, interestGain: 0 };
   }
@@ -402,6 +484,7 @@ export class BotBrain {
         if (!this.lastSeenPlayerPos || msg.time > this.lastSeenPlayerPos.time) {
           this.lastSeenPlayerPos = { gx: msg.data.gx, gy: msg.data.gy, time: msg.time };
           this.interest = Math.min(100, this.interest + INTEREST_FACTORS.ALLY_INFO);
+          this.awareness = Math.min(AWARENESS_MAX, this.awareness + 8);
           this.forceThink();
         }
         break;
@@ -409,6 +492,7 @@ export class BotBrain {
         if (!this.lastSeenPlayerPos || msg.time > this.lastSeenPlayerPos.time - 1000) {
           this.lastSeenPlayerPos = { gx: msg.data.fromGx, gy: msg.data.fromGy, time: msg.time };
           this.interest = Math.min(100, this.interest + INTEREST_FACTORS.ALLY_INFO * 1.5);
+          this.awareness = Math.min(AWARENESS_MAX, this.awareness + 12);
           this.forceThink();
         }
         break;
@@ -497,6 +581,7 @@ export class BotBrain {
 
   onTakeDamage(damage, source) {
     this.interest = Math.min(100, this.interest + INTEREST_FACTORS.TAKING_DAMAGE);
+    this.awareness = Math.min(AWARENESS_MAX, this.awareness + 25);
     if (source && source.gx !== undefined) {
       this.lastSeenPlayerPos = { gx: source.gx, gy: source.gy, time: performance.now() };
     }
@@ -521,7 +606,7 @@ export class BotBrain {
     const wasVisible = this.lastSeenPlayerPos && (now - this.lastSeenPlayerPos.time < 2000);
 
     if (playerVisible) {
-      delta += INTEREST_FACTORS.VISUAL_CONTACT;
+      delta += INTEREST_FACTORS.VISUAL_CONTACT * 0.5;
       this.lastSeenPlayerPos = { gx: this.world.player.gx, gy: this.world.player.gy, time: now };
       this.lostTargetTime = 0;
       this.searchTargetPos = null;
@@ -541,7 +626,7 @@ export class BotBrain {
     }
 
     if (sound.heard) {
-      delta += sound.interestGain;
+      delta += sound.interestGain * 0.5;
       if (!this.lastSeenPlayerPos) {
         this.lastSeenPlayerPos = { gx: sound.gx, gy: sound.gy, time: now };
         if (sound.type === 'gunshot') {
@@ -733,7 +818,6 @@ export class BotBrain {
     const def = CONSUMABLE_ITEMS[item.id];
     if (!def) return false;
 
-    const before = this.entity.hp;
     this.entity.hp = Math.min(this.entity.maxHp, this.entity.hp + def.healAmount);
     this.lastMedkitTime = now;
     return true;
@@ -778,8 +862,6 @@ export class BotBrain {
 
     return false;
   }
-
-  // -------- Стрельба с lead (3c-2) --------
 
   shootAtPlayer(now) {
     if (now < this.holdFireUntil) return;
@@ -832,8 +914,6 @@ export class BotBrain {
 
     this.entity.shoot(targetGx, targetGy);
   }
-
-  // -------- Suppressive fire (3c-2) --------
 
   trySuppressiveFire(now) {
     if (now - this.lastSuppressiveFireTime < SUPPRESSIVE_FIRE_COOLDOWN_MS) return false;
@@ -890,6 +970,7 @@ export class BotBrain {
     this.lastThinkTime = now;
 
     this.updateInterest(now);
+    this.updateAwareness(now);
 
     const situation = this.assessSituation(now);
 
