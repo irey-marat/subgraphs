@@ -35,6 +35,7 @@ export class Projectile {
       this.alive = true;
       this.element = null;
       this.suppressedCells = new Set();
+      this.ricochetCount = 0;
       return;
     }
 
@@ -60,8 +61,8 @@ export class Projectile {
 
     this.element = null;
 
-    // B2: клетки, для которых уже начислено подавление от пролёта
     this.suppressedCells = new Set();
+    this.ricochetCount = 0;
   }
 
   penetrationMm() {
@@ -99,6 +100,18 @@ export class Projectile {
         this.detonate(nx, ny);
         return false;
       }
+
+      const ricochetResult = this.tryRicochet(obs);
+      if (ricochetResult === 'ricochet') {
+        this.wx = nx;
+        this.wy = ny;
+        this.traveledCells += stepCells;
+        return true;
+      }
+      if (ricochetResult === 'absorbed') {
+        return false;
+      }
+
       const resMm = obs.obstacleResistance * BALLISTICS.OBSTACLE_MM_SCALE;
       const penMm = this.penetrationMm();
       if (penMm < resMm) {
@@ -116,7 +129,6 @@ export class Projectile {
       return false;
     }
 
-    // B2: подавление от пролёта рядом с персонажем
     this.applyFlybySuppression(cellX, cellY);
 
     if (this.traveledCells >= this.maxCells) {
@@ -128,6 +140,56 @@ export class Projectile {
     this.wy = ny;
     this.traveledCells += stepCells;
     return true;
+  }
+
+  tryRicochet(obs) {
+    if (!obs.material) return 'none';
+    if (this.ricochetCount >= 2) return 'none';
+
+    const material = obs.material;
+
+    const dot = -(this.dirX * (-this.dirX) + this.dirY * (-this.dirY));
+    const normalX = -this.dirX;
+    const normalY = -this.dirY;
+    const cosAngle = Math.max(-1, Math.min(1, -(this.dirX * normalX + this.dirY * normalY)));
+    const angleRad = Math.acos(cosAngle);
+    const angleDeg = angleRad * 180 / Math.PI;
+
+    const maxAngleRad = BALLISTICS.RICOCHET_MAX_ANGLE_DEG * Math.PI / 180;
+
+    if (angleRad > maxAngleRad) return 'none';
+
+    const chance = material.ricochetChance * (1 - angleRad / maxAngleRad);
+    if (Math.random() >= chance) return 'none';
+
+    const energyLoss = BALLISTICS.RICOCHET_ENERGY_LOSS_BASE + material.ricochetEnergyLoss;
+    this.E *= Math.max(0.1, 1 - energyLoss);
+
+    if (this.E < BALLISTICS.MIN_ENERGY_J) return 'absorbed';
+
+    const dotDirNormal = this.dirX * normalX + this.dirY * normalY;
+    let rx = this.dirX - 2 * dotDirNormal * normalX;
+    let ry = this.dirY - 2 * dotDirNormal * normalY;
+
+    const randomRad = (Math.random() - 0.5) * 2 * (BALLISTICS.RICOCHET_ANGLE_RANDOM_DEG * Math.PI / 180);
+    const cosR = Math.cos(randomRad);
+    const sinR = Math.sin(randomRad);
+    const finalX = rx * cosR - ry * sinR;
+    const finalY = rx * sinR + ry * cosR;
+
+    const len = Math.hypot(finalX, finalY) || 1;
+    this.dirX = finalX / len;
+    this.dirY = finalY / len;
+
+    this.ricochetCount++;
+
+    this.velocityPx *= Math.sqrt(Math.max(0, this.E / this.E0)) / Math.max(0.01, this.velocityPx / (this.v0 * CELL_SIZE));
+
+    const physicalSpeedPx = Math.sqrt(2 * this.E / this.massKg) * CELL_SIZE;
+    const maxVisualSpeedPx = BALLISTICS.VISUAL_SPEED_CELLS_PER_FRAME * CELL_SIZE * 60;
+    this.velocityPx = Math.min(physicalSpeedPx, maxVisualSpeedPx);
+
+    return 'ricochet';
   }
 
   applyFlybySuppression(cellX, cellY) {
