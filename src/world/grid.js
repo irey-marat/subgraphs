@@ -1,6 +1,7 @@
 // src/world/grid.js
 
 import { OBSTACLE_TYPES, IMAGE_REGISTRY } from '../data/obstacles.js';
+import { getMaterialForObstacle } from '../data/materials.js';
 
 export class GridSystem {
   constructor(db, world) {
@@ -62,10 +63,12 @@ export class GridSystem {
         continue;
       }
 
+      const material = getMaterialForObstacle(logicType);
+
       const obstacle = {
         id: anchorGx + '|' + anchorGy,
         anchorGx, anchorGy,
-        rawKey, logicType,
+        rawKey, logicType, material,
         size: def.size,
         blocksMovement: def.blocksMovement,
         visionBlock: def.visionBlock,
