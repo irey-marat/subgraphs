@@ -248,7 +248,14 @@
       recoilPerShot: 0.1,
       recoilRecovery: 0.11,
       maxRecoil: 0.35,
-      recoilSpreadMultiplier: 0.35
+      recoilSpreadMultiplier: 0.35,
+      aimTime: 200,
+      movementPenalty: 0.35,
+      firstShotMultiplier: 1.1,
+      recoveryDelay: 120,
+      bloomPerShot: 0.03,
+      bloomMax: 0.25,
+      bloomRecovery: 0.7
     },
     ppsh41: {
       id: "ppsh41",
@@ -270,7 +277,14 @@
       recoilPerShot: 0.15,
       recoilRecovery: 0.09,
       maxRecoil: 0.6,
-      recoilSpreadMultiplier: 0.6
+      recoilSpreadMultiplier: 0.6,
+      aimTime: 280,
+      movementPenalty: 0.55,
+      firstShotMultiplier: 1.05,
+      recoveryDelay: 180,
+      bloomPerShot: 0.04,
+      bloomMax: 0.45,
+      bloomRecovery: 0.55
     },
     ak47: {
       id: "ak47",
@@ -292,7 +306,14 @@
       recoilPerShot: 0.18,
       recoilRecovery: 0.07,
       maxRecoil: 1.1,
-      recoilSpreadMultiplier: 0.85
+      recoilSpreadMultiplier: 0.85,
+      aimTime: 320,
+      movementPenalty: 0.6,
+      firstShotMultiplier: 1.15,
+      recoveryDelay: 200,
+      bloomPerShot: 0.05,
+      bloomMax: 0.6,
+      bloomRecovery: 0.5
     },
     pkm: {
       id: "pkm",
@@ -314,7 +335,14 @@
       recoilPerShot: 0.25,
       recoilRecovery: 0.04,
       maxRecoil: 1.4,
-      recoilSpreadMultiplier: 1
+      recoilSpreadMultiplier: 1,
+      aimTime: 380,
+      movementPenalty: 0.7,
+      firstShotMultiplier: 1.05,
+      recoveryDelay: 250,
+      bloomPerShot: 0.07,
+      bloomMax: 0.8,
+      bloomRecovery: 0.4
     },
     svd: {
       id: "svd",
@@ -336,7 +364,14 @@
       recoilPerShot: 0.45,
       recoilRecovery: 0.04,
       maxRecoil: 1.1,
-      recoilSpreadMultiplier: 0.9
+      recoilSpreadMultiplier: 0.9,
+      aimTime: 500,
+      movementPenalty: 0.85,
+      firstShotMultiplier: 1.3,
+      recoveryDelay: 350,
+      bloomPerShot: 0.09,
+      bloomMax: 0.7,
+      bloomRecovery: 0.35
     },
     saiga12: {
       id: "saiga12",
@@ -358,7 +393,14 @@
       recoilPerShot: 0.22,
       recoilRecovery: 0.11,
       maxRecoil: 0.65,
-      recoilSpreadMultiplier: 0.45
+      recoilSpreadMultiplier: 0.45,
+      aimTime: 250,
+      movementPenalty: 0.75,
+      firstShotMultiplier: 1.05,
+      recoveryDelay: 200,
+      bloomPerShot: 0.06,
+      bloomMax: 0.55,
+      bloomRecovery: 0.55
     },
     rocket_launcher: {
       id: "rocket_launcher",
@@ -380,7 +422,14 @@
       recoilPerShot: 0.5,
       recoilRecovery: 0.03,
       maxRecoil: 1.2,
-      recoilSpreadMultiplier: 1
+      recoilSpreadMultiplier: 1,
+      aimTime: 450,
+      movementPenalty: 0.9,
+      firstShotMultiplier: 1.2,
+      recoveryDelay: 400,
+      bloomPerShot: 0.1,
+      bloomMax: 0.9,
+      bloomRecovery: 0.3
     }
   };
   const CELL_SIZE = 36;
@@ -633,6 +682,52 @@
     { dx: -1, dy: 0 },
     { dx: -1, dy: -1 }
   ];
+  const MATERIALS = {
+    stone: {
+      id: "stone",
+      name: "Камень",
+      hardness: 0.9,
+      ricochetChance: 0.35,
+      ricochetEnergyLoss: 0.6,
+      penetrationResistance: 0.85
+    },
+    wood: {
+      id: "wood",
+      name: "Дерево",
+      hardness: 0.5,
+      ricochetChance: 0.2,
+      ricochetEnergyLoss: 0.7,
+      penetrationResistance: 0.45
+    },
+    foliage: {
+      id: "foliage",
+      name: "Листва",
+      hardness: 0.1,
+      ricochetChance: 0.03,
+      ricochetEnergyLoss: 0.85,
+      penetrationResistance: 0.1
+    }
+  };
+  function getMaterialForObstacle(logicType) {
+    switch (logicType) {
+      case "rock_big":
+      case "rock_medium":
+        return MATERIALS.stone;
+      case "tree_vertical":
+      case "tree_big":
+      case "tree_with_rock":
+      case "palm_vertical":
+      case "palm_big":
+        return MATERIALS.wood;
+      case "bush_light":
+      case "bush_dense":
+      case "bush_wide":
+      case "cactus":
+        return MATERIALS.foliage;
+      default:
+        return null;
+    }
+  }
   class GridSystem {
     constructor(db, world) {
       this.db = db;
@@ -687,12 +782,14 @@
           }
           continue;
         }
+        const material = getMaterialForObstacle(logicType);
         const obstacle = {
           id: anchorGx + "|" + anchorGy,
           anchorGx,
           anchorGy,
           rawKey,
           logicType,
+          material,
           size: def.size,
           blocksMovement: def.blocksMovement,
           visionBlock: def.visionBlock,
@@ -882,7 +979,10 @@
     MIN_VELOCITY_MPS: 30,
     LOS_CACHE_TTL_MS: 100,
     LOS_CACHE_MAX_SIZE: 500,
-    VISUAL_SPEED_CELLS_PER_FRAME: 0.4
+    VISUAL_SPEED_CELLS_PER_FRAME: 0.4,
+    RICOCHET_MAX_ANGLE_DEG: 60,
+    RICOCHET_ENERGY_LOSS_BASE: 0.15,
+    RICOCHET_ANGLE_RANDOM_DEG: 10
   };
   class LOSCache {
     constructor() {
@@ -2760,6 +2860,7 @@
       this.hpBarElement = null;
       this.facingAngle = 0;
       this.lastTurnTime = 0;
+      this.lastMoveOrTurn = 0;
       this.activeWeaponSlot = "primary";
       this.currentWeaponId = null;
       this.currentAmmo = 0;
@@ -2769,8 +2870,7 @@
       this.recoil = 0;
       this.suppression = 0;
       this.currentBurstId = null;
-      this.currentSpread = 0;
-      this.burstSpreadGain = 0.035;
+      this.bloom = 0;
       this.botBrain = null;
       this.xp = 0;
       this.level = 1;
@@ -2806,6 +2906,7 @@
       this.currentAmmo = weapon.magazineSize;
       this.isReloading = false;
       this.currentBurstId = null;
+      this.bloom = 0;
       return true;
     }
     getDistanceTo(targetGx, targetGy, metric = "chebyshev") {
@@ -2816,12 +2917,16 @@
     faceMovementDirection() {
       if (this.moveDirection.dx !== 0 || this.moveDirection.dy !== 0) {
         this.facingAngle = Math.atan2(this.moveDirection.dy, this.moveDirection.dx);
+        this.lastMoveOrTurn = performance.now();
       }
     }
     faceTarget(targetGx, targetGy) {
       const dx = targetGx - this.gx;
       const dy = targetGy - this.gy;
-      if (dx !== 0 || dy !== 0) this.facingAngle = Math.atan2(dy, dx);
+      if (dx !== 0 || dy !== 0) {
+        this.facingAngle = Math.atan2(dy, dx);
+        this.lastMoveOrTurn = performance.now();
+      }
     }
     smoothFaceTarget(targetGx, targetGy, now) {
       if (now - this.lastTurnTime < BOT_TURN_DELAY_MS) return;
@@ -2835,14 +2940,19 @@
       }
     }
     calculateAccuracy(weapon) {
-      let accuracy = weapon.accuracy;
-      const suppressionPenalty = this.suppression * 0.5;
-      accuracy *= 1 - suppressionPenalty;
-      const recoilPenalty = this.recoil * (weapon.recoilSpreadMultiplier || 0.5);
-      accuracy -= recoilPenalty;
-      const enduranceBonus = (this.stats.endurance - 10) * 0.02;
-      accuracy += enduranceBonus;
-      return Math.max(0.1, Math.min(0.95, accuracy));
+      const now = performance.now();
+      let acc = weapon.accuracy;
+      acc *= 1 - this.suppression * 0.5;
+      if (this.isMoving) acc *= 1 - weapon.movementPenalty;
+      const aimTime = weapon.aimTime || 250;
+      const aimProgress = Math.max(0, Math.min(1, (now - this.lastMoveOrTurn) / aimTime));
+      acc *= 0.55 + 0.45 * aimProgress;
+      if (now - this.lastShotTime > 600) {
+        acc *= weapon.firstShotMultiplier || 1;
+      }
+      acc += (this.stats.endurance - 10) * 0.02;
+      acc -= this.bloom;
+      return Math.max(0.08, Math.min(0.97, acc));
     }
     shoot(targetGx, targetGy) {
       const weapon = this.getActiveWeapon();
@@ -2889,7 +2999,6 @@
         if (self.hp <= 0) return;
         self.fireSingle(targetGx, targetGy, weapon);
         fired++;
-        self.currentSpread += self.burstSpreadGain || 0.035;
         if (fired < burstCount) {
           self.world.taskQueue.schedule(weapon.burstInterval, fireNext);
         } else if (self.botBrain) {
@@ -2903,6 +3012,7 @@
         this.reload();
         return;
       }
+      performance.now();
       const finalAccuracy = this.calculateAccuracy(weapon);
       const startGx = this.gx;
       const startGy = this.gy;
@@ -2915,7 +3025,7 @@
       const len = Math.hypot(dx, dy) || 1;
       const dirX = dx / len;
       const dirY = dy / len;
-      const spreadAngle = (1 - finalAccuracy) * 0.8 + this.currentSpread;
+      const spreadAngle = (1 - finalAccuracy) * 0.75 + this.bloom;
       const angleOffset = (Math.random() - 0.5) * spreadAngle;
       const cos = Math.cos(angleOffset);
       const sin = Math.sin(angleOffset);
@@ -2945,6 +3055,7 @@
       }
       this.currentAmmo--;
       this.recoil = Math.min(weapon.maxRecoil, this.recoil + weapon.recoilPerShot);
+      this.bloom = Math.min(weapon.bloomMax, this.bloom + weapon.bloomPerShot);
     }
     throwGrenade(targetGx, targetGy, itemId) {
       const now = performance.now();
@@ -2999,21 +3110,26 @@
       });
     }
     updateRecovery(dt) {
+      const now = performance.now();
+      const weapon = this.getActiveWeapon();
       if (this.recoil > 0) {
-        const weapon = this.getActiveWeapon();
         if (weapon) {
           const recovery = weapon.recoilRecovery * dt * 60;
           this.recoil = Math.max(0, this.recoil - recovery);
         }
       }
-      if (this.currentSpread > 0) {
-        this.currentSpread = Math.max(0, this.currentSpread - dt * 0.4);
+      if (this.bloom > 0) {
+        const recoveryDelay = weapon ? weapon.recoveryDelay || 180 : 180;
+        if (now - this.lastShotTime > recoveryDelay) {
+          const bloomRecovery = weapon ? weapon.bloomRecovery || 0.5 : 0.5;
+          this.bloom = Math.max(0, this.bloom - bloomRecovery * dt);
+        }
       }
       if (this.suppression > 0) {
         const recoveryRate = 0.1 * (1 + (this.stats.endurance - 10) * 0.05);
         this.suppression = Math.max(0, this.suppression - recoveryRate * dt);
       }
-      if (this.isReloading && performance.now() >= this.reloadEndTime) {
+      if (this.isReloading && now >= this.reloadEndTime) {
         this.isReloading = false;
         this.reloadEndTime = 0;
       }
@@ -3095,6 +3211,7 @@
         this.alive = true;
         this.element = null;
         this.suppressedCells = /* @__PURE__ */ new Set();
+        this.ricochetCount = 0;
         return;
       }
       this.massKg = ammo.mass_g / 1e3;
@@ -3114,6 +3231,7 @@
       this.alive = true;
       this.element = null;
       this.suppressedCells = /* @__PURE__ */ new Set();
+      this.ricochetCount = 0;
     }
     penetrationMm() {
       if (this.isGrenade) return 0;
@@ -3143,6 +3261,16 @@
           this.detonate(nx, ny);
           return false;
         }
+        const ricochetResult = this.tryRicochet(obs);
+        if (ricochetResult === "ricochet") {
+          this.wx = nx;
+          this.wy = ny;
+          this.traveledCells += stepCells;
+          return true;
+        }
+        if (ricochetResult === "absorbed") {
+          return false;
+        }
         const resMm = obs.obstacleResistance * BALLISTICS.OBSTACLE_MM_SCALE;
         const penMm = this.penetrationMm();
         if (penMm < resMm) {
@@ -3167,6 +3295,40 @@
       this.wy = ny;
       this.traveledCells += stepCells;
       return true;
+    }
+    tryRicochet(obs) {
+      if (!obs.material) return "none";
+      if (this.ricochetCount >= 2) return "none";
+      const material = obs.material;
+      -(this.dirX * -this.dirX + this.dirY * -this.dirY);
+      const normalX = -this.dirX;
+      const normalY = -this.dirY;
+      const cosAngle = Math.max(-1, Math.min(1, -(this.dirX * normalX + this.dirY * normalY)));
+      const angleRad = Math.acos(cosAngle);
+      const maxAngleRad = BALLISTICS.RICOCHET_MAX_ANGLE_DEG * Math.PI / 180;
+      if (angleRad > maxAngleRad) return "none";
+      const chance = material.ricochetChance * (1 - angleRad / maxAngleRad);
+      if (Math.random() >= chance) return "none";
+      const energyLoss = BALLISTICS.RICOCHET_ENERGY_LOSS_BASE + material.ricochetEnergyLoss;
+      this.E *= Math.max(0.1, 1 - energyLoss);
+      if (this.E < BALLISTICS.MIN_ENERGY_J) return "absorbed";
+      const dotDirNormal = this.dirX * normalX + this.dirY * normalY;
+      let rx = this.dirX - 2 * dotDirNormal * normalX;
+      let ry = this.dirY - 2 * dotDirNormal * normalY;
+      const randomRad = (Math.random() - 0.5) * 2 * (BALLISTICS.RICOCHET_ANGLE_RANDOM_DEG * Math.PI / 180);
+      const cosR = Math.cos(randomRad);
+      const sinR = Math.sin(randomRad);
+      const finalX = rx * cosR - ry * sinR;
+      const finalY = rx * sinR + ry * cosR;
+      const len = Math.hypot(finalX, finalY) || 1;
+      this.dirX = finalX / len;
+      this.dirY = finalY / len;
+      this.ricochetCount++;
+      this.velocityPx *= Math.sqrt(Math.max(0, this.E / this.E0)) / Math.max(0.01, this.velocityPx / (this.v0 * CELL_SIZE));
+      const physicalSpeedPx = Math.sqrt(2 * this.E / this.massKg) * CELL_SIZE;
+      const maxVisualSpeedPx = BALLISTICS.VISUAL_SPEED_CELLS_PER_FRAME * CELL_SIZE * 60;
+      this.velocityPx = Math.min(physicalSpeedPx, maxVisualSpeedPx);
+      return "ricochet";
     }
     applyFlybySuppression(cellX, cellY) {
       const key = cellX + "," + cellY;
