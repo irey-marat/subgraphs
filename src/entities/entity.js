@@ -29,6 +29,7 @@ export class Entity {
     this.hpBarElement = null;
     this.facingAngle = 0;
     this.lastTurnTime = 0;
+    this.lastMoveOrTurn = 0;
 
     this.activeWeaponSlot = 'primary';
     this.currentWeaponId = null;
@@ -40,8 +41,7 @@ export class Entity {
     this.recoil = 0;
     this.suppression = 0;
     this.currentBurstId = null;
-    this.currentSpread = 0;
-    this.burstSpreadGain = 0.035;
+    this.bloom = 0;
 
     this.botBrain = null;
     this.xp = 0;
@@ -78,6 +78,7 @@ export class Entity {
     this.currentAmmo = weapon.magazineSize;
     this.isReloading = false;
     this.currentBurstId = null;
+    this.bloom = 0;
     return true;
   }
 
@@ -90,13 +91,17 @@ export class Entity {
   faceMovementDirection() {
     if (this.moveDirection.dx !== 0 || this.moveDirection.dy !== 0) {
       this.facingAngle = Math.atan2(this.moveDirection.dy, this.moveDirection.dx);
+      this.lastMoveOrTurn = performance.now();
     }
   }
 
   faceTarget(targetGx, targetGy) {
     const dx = targetGx - this.gx;
     const dy = targetGy - this.gy;
-    if (dx !== 0 || dy !== 0) this.facingAngle = Math.atan2(dy, dx);
+    if (dx !== 0 || dy !== 0) {
+      this.facingAngle = Math.atan2(dy, dx);
+      this.lastMoveOrTurn = performance.now();
+    }
   }
 
   smoothFaceTarget(targetGx, targetGy, now) {
@@ -113,14 +118,26 @@ export class Entity {
   }
 
   calculateAccuracy(weapon) {
-    let accuracy = weapon.accuracy;
-    const suppressionPenalty = this.suppression * 0.5;
-    accuracy *= (1 - suppressionPenalty);
-    const recoilPenalty = this.recoil * (weapon.recoilSpreadMultiplier || 0.5);
-    accuracy -= recoilPenalty;
-    const enduranceBonus = (this.stats.endurance - 10) * 0.02;
-    accuracy += enduranceBonus;
-    return Math.max(0.1, Math.min(0.95, accuracy));
+    const now = performance.now();
+    let acc = weapon.accuracy;
+
+    acc *= (1 - this.suppression * 0.5);
+
+    if (this.isMoving) acc *= (1 - weapon.movementPenalty);
+
+    const aimTime = weapon.aimTime || 250;
+    const aimProgress = Math.max(0, Math.min(1, (now - this.lastMoveOrTurn) / aimTime));
+    acc *= (0.55 + 0.45 * aimProgress);
+
+    if (now - this.lastShotTime > 600) {
+      acc *= weapon.firstShotMultiplier || 1.0;
+    }
+
+    acc += (this.stats.endurance - 10) * 0.02;
+
+    acc -= this.bloom;
+
+    return Math.max(0.08, Math.min(0.97, acc));
   }
 
   shoot(targetGx, targetGy) {
@@ -168,7 +185,6 @@ export class Entity {
       if (self.hp <= 0) return;
       self.fireSingle(targetGx, targetGy, weapon);
       fired++;
-      self.currentSpread += self.burstSpreadGain || 0.035;
       if (fired < burstCount) {
         self.world.taskQueue.schedule(weapon.burstInterval, fireNext);
       } else if (self.botBrain) {
@@ -180,7 +196,9 @@ export class Entity {
 
   fireSingle(targetGx, targetGy, weapon) {
     if (this.currentAmmo <= 0) { this.reload(); return; }
+    const now = performance.now();
     const finalAccuracy = this.calculateAccuracy(weapon);
+
     const startGx = this.gx;
     const startGy = this.gy;
     const targetX = targetGx + 0.5;
@@ -193,7 +211,7 @@ export class Entity {
     const dirX = dx / len;
     const dirY = dy / len;
 
-    const spreadAngle = (1 - finalAccuracy) * 0.8 + this.currentSpread;
+    const spreadAngle = (1 - finalAccuracy) * 0.75 + this.bloom;
     const angleOffset = (Math.random() - 0.5) * spreadAngle;
     const cos = Math.cos(angleOffset);
     const sin = Math.sin(angleOffset);
@@ -223,6 +241,7 @@ export class Entity {
 
     this.currentAmmo--;
     this.recoil = Math.min(weapon.maxRecoil, this.recoil + weapon.recoilPerShot);
+    this.bloom = Math.min(weapon.bloomMax, this.bloom + weapon.bloomPerShot);
   }
 
   throwGrenade(targetGx, targetGy, itemId) {
@@ -285,21 +304,29 @@ export class Entity {
   }
 
   updateRecovery(dt) {
+    const now = performance.now();
+    const weapon = this.getActiveWeapon();
+
     if (this.recoil > 0) {
-      const weapon = this.getActiveWeapon();
       if (weapon) {
         const recovery = weapon.recoilRecovery * dt * 60;
         this.recoil = Math.max(0, this.recoil - recovery);
       }
     }
-    if (this.currentSpread > 0) {
-      this.currentSpread = Math.max(0, this.currentSpread - dt * 0.4);
+
+    if (this.bloom > 0) {
+      const recoveryDelay = weapon ? (weapon.recoveryDelay || 180) : 180;
+      if (now - this.lastShotTime > recoveryDelay) {
+        const bloomRecovery = weapon ? (weapon.bloomRecovery || 0.5) : 0.5;
+        this.bloom = Math.max(0, this.bloom - bloomRecovery * dt);
+      }
     }
+
     if (this.suppression > 0) {
       const recoveryRate = 0.1 * (1 + (this.stats.endurance - 10) * 0.05);
       this.suppression = Math.max(0, this.suppression - recoveryRate * dt);
     }
-    if (this.isReloading && performance.now() >= this.reloadEndTime) {
+    if (this.isReloading && now >= this.reloadEndTime) {
       this.isReloading = false;
       this.reloadEndTime = 0;
     }
