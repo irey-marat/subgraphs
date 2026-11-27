@@ -11,6 +11,7 @@ import { TaskQueue } from '../core/task-queue.js';
 import { EventBus } from '../core/event-bus.js';
 import { Pathfinding } from '../ai/pathfinding.js';
 import { RadioManager } from '../ai/communication.js';
+import { GroupManager } from '../ai/group-manager.js';
 import { BotBrain } from '../ai/bot-brain.js';
 import { Entity, setProjectileClass } from '../entities/entity.js';
 import { Projectile } from '../entities/projectile.js';
@@ -55,6 +56,7 @@ export class World {
     this.spawnManager = new SpawnManager(this);
     this.soundManager = new SoundManager(this);
     this.radioManager = new RadioManager(this);
+    this.groupManager = new GroupManager(this);
     this.pathfinding = new Pathfinding(this);
 
     this.ui = null;
@@ -113,8 +115,6 @@ export class World {
     }
     console.log('[World] caches loaded for sector', sectorId, ':', list.length);
   }
-
-  // -------- Пояс --------
 
   selectBeltSlot(index) {
     if (!this.player) return;
@@ -202,8 +202,6 @@ export class World {
     this.eventBus.emit('belt:selection', null);
     return false;
   }
-
-  // -------- Спавн --------
 
   spawnPlayer() {
     const player = new Entity({
@@ -348,8 +346,6 @@ export class World {
     return Math.max(Math.abs(gx - SAFE_ZONE.gx), Math.abs(gy - SAFE_ZONE.gy)) <= SAFE_ZONE.radius;
   }
 
-  // -------- Дым --------
-
   createSmokeCloud({ sectorId, gx, gy, radius, duration, owner }) {
     this.smokeClouds.push({
       sectorId, gx, gy, radius, duration,
@@ -373,8 +369,6 @@ export class World {
   updateSmoke(now) {
     this.smokeClouds = this.smokeClouds.filter((s) => now - s.createdAt < s.duration);
   }
-
-  // -------- Проекции / попадания --------
 
   addProjectile(proj) {
     this.projectiles.push(proj);
@@ -460,8 +454,6 @@ export class World {
     }
   }
 
-  // -------- Смерть / респавн --------
-
   removeEntity(entity) {
     this.entities.delete(entity.id);
     if (entity.isPlayer) {
@@ -512,9 +504,11 @@ export class World {
       bot.botBrain.stateEntryTime = performance.now();
       bot.botBrain.currentIntent = 'patrol';
       bot.botBrain.interest = 0;
+      bot.botBrain.awareness = 0;
       bot.botBrain.lastSeenPlayerPos = null;
       bot.botBrain.alertPosition = null;
       bot.botBrain.coverPosition = null;
+      bot.botBrain.firingPosition = null;
       bot.botBrain.tempMoveTarget = null;
       bot.botBrain.isAiming = false;
       bot.botBrain.lastBurstEndTime = 0;
@@ -524,9 +518,11 @@ export class World {
       bot.suppression = 0;
       bot.lastShotTime = 0;
     }
+    if (this.groupManager) {
+      this.groupManager.groups.clear();
+      this.groupManager.botToGroup.clear();
+    }
   }
-
-  // -------- Лут / POI --------
 
   dropBotLoot(bot) {
     const items = [];
@@ -567,8 +563,6 @@ export class World {
     }
     this.poiManager.markDepleted(poi);
   }
-
-  // -------- Действия игрока --------
 
   handleClick(gx, gy) {
     if (!this.player || this.player.hp <= 0) return;
@@ -619,8 +613,6 @@ export class World {
     this.poiManager.createAlert({ sectorId: this.currentSectorId, gx, gy });
   }
 
-  // -------- Переходы --------
-
   handleTransition(tr) {
     this.transitionToSector(tr.to.sectorId, tr.to.gx, tr.to.gy);
   }
@@ -652,6 +644,11 @@ export class World {
     if (this.aliveBotCount() === 0) this.spawnInitialBotsForSector(targetSectorId);
 
     await this.loadCaches(targetSectorId);
+
+    if (this.groupManager) {
+      this.groupManager.groups.clear();
+      this.groupManager.botToGroup.clear();
+    }
 
     this.camera.snapTo(this.player.gx, this.player.gy, this.grid.sector.width, this.grid.sector.height);
     this.eventBus.emit('hud:message', t('msg.entered', { name: this.grid.sector.name || targetSectorId }));
@@ -734,8 +731,6 @@ export class World {
     this.sectorStates.delete(sectorId);
   }
 
-  // -------- Update --------
-
   update(dt, now) {
     if (!this.player || !this.grid.sector) return;
 
@@ -743,6 +738,10 @@ export class World {
     this.poiManager.update(now);
     this.spawnManager.update(now);
     this.updateSmoke(now);
+
+    if (this.groupManager) {
+      this.groupManager.updateGroups(now);
+    }
 
     this.player.moveCooldown = Math.max(0, this.player.moveCooldown - dt);
     this.player.updateRecovery(dt);
@@ -777,8 +776,6 @@ export class World {
     this.lastRemoteTick = now;
   }
 
-  // -------- Сериализация (3b-2) --------
-
   serialize() {
     const sectorStates = [];
     for (const [sectorId, s] of this.sectorStates.entries()) {
@@ -789,7 +786,6 @@ export class World {
       });
     }
 
-    // текущий сектор тоже сохраняем как sectorState (чтобы при загрузке восстановить ботов из него)
     const currentBots = [];
     for (const e of this.entities.values()) {
       if (e.isPlayer) continue;
@@ -874,6 +870,11 @@ export class World {
     }));
 
     this.restoreSectorState(this.currentSectorId);
+
+    if (this.groupManager) {
+      this.groupManager.groups.clear();
+      this.groupManager.botToGroup.clear();
+    }
 
     if (this.grid.sector) {
       this.camera.snapTo(this.player.gx, this.player.gy, this.grid.sector.width, this.grid.sector.height);
